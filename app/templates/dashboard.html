@@ -13,8 +13,8 @@ h1{font-size:24px;margin:0 0 6px}
 h2{font-size:19px;margin-top:0}
 p,.muted{color:#aebbd3}
 .card{background:#131d33;border:1px solid #293650;border-radius:14px;padding:18px;margin:16px 0}
-input,button{width:100%;padding:12px;border-radius:9px;margin:6px 0;font:inherit}
-input{background:#0b1020;color:white;border:1px solid #465572}
+input,button,textarea{width:100%;padding:12px;border-radius:9px;margin:6px 0;font:inherit}
+input,textarea{background:#0b1020;color:white;border:1px solid #465572}
 button{border:0;background:#91b5ff;color:#081126;font-weight:700;cursor:pointer}
 button.secondary{background:#263652;color:#fff}
 button.danger{background:#62313a;color:#fff}
@@ -23,7 +23,7 @@ button.danger{background:#62313a;color:#fff}
 .hidden{display:none}
 .notice{overflow-wrap:anywhere;padding:12px;border-radius:9px;background:#202c43;margin:10px 0}
 .key{border-top:1px solid #293650;padding:12px 0;overflow-wrap:anywhere}
-.status{color:#b7f5cb;white-space:pre-wrap}
+.status{color:#b7f5cb;white-space:pre-wrap} #chatMessages{min-height:100px;max-height:380px;overflow:auto;background:#0b1020;border:1px solid #293650;border-radius:10px;padding:12px} .bubble{white-space:pre-wrap;overflow-wrap:anywhere;padding:10px;margin:8px 0;border-radius:9px;background:#202c43} .bubble.user{background:#263b5c} textarea{resize:vertical}
 </style>
 </head>
 <body>
@@ -54,9 +54,28 @@ button.danger{background:#62313a;color:#fff}
       <div id="keys"></div>
     </div>
     <div class="card">
+      <h2>Chat with Declan AI</h2>
+      <p>Enter your Declan API key. It stays in this page's memory and is not saved in browser storage.</p>
+      <input id="chatKey" type="password" autocomplete="off" placeholder="Paste your Declan API key">
+      <div id="chatMessages" aria-live="polite">Your conversation will appear here.</div>
+      <textarea id="chatInput" rows="3" maxlength="12000" placeholder="Ask Declan AI something..."></textarea>
+      <div class="row">
+        <button id="sendChat">Send message</button>
+        <button id="clearChat" class="secondary">New chat</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Usage statistics</h2>
+      <p>Requests: <strong id="usageRequests">0</strong></p>
+      <p>Prompt tokens: <strong id="usagePrompt">0</strong></p>
+      <p>Completion tokens: <strong id="usageCompletion">0</strong></p>
+      <p>Total tokens: <strong id="usageTotal">0</strong></p>
+      <button id="refreshUsage" class="secondary">Refresh usage</button>
+    </div>
+    <div class="card">
       <h2>API endpoint</h2>
       <div class="notice">POST /v1/chat/completions</div>
-      <p>The API key management works, but AI responses are not available until a model provider is connected.</p>
+      <p>Send requests to Declan AI using your API key and the chat completions endpoint.</p>
       <button id="logout" class="secondary">Log out</button>
     </div>
   </section>
@@ -98,6 +117,72 @@ $("login").onclick = () => run(async () => {
   await loadKeys();
   await loadUsage();
 });
+let chatHistory = [];
+
+function showChatMessage(role, content) {
+  const area = $("chatMessages");
+  if (area.textContent === "Your conversation will appear here.") {
+    area.replaceChildren();
+  }
+  const bubble = document.createElement("div");
+  bubble.className = "bubble " + (role === "user" ? "user" : "assistant");
+  bubble.textContent = (role === "user" ? "You: " : "Declan AI: ") + content;
+  area.appendChild(bubble);
+  area.scrollTop = area.scrollHeight;
+}
+
+$("sendChat").onclick = async () => {
+  const key = $("chatKey").value.trim();
+  const prompt = $("chatInput").value.trim();
+  if (!key) { showMessage("Enter your Declan API key first."); return; }
+  if (!prompt) { showMessage("Type a message first."); return; }
+
+  chatHistory.push({role:"user", content:prompt});
+  showChatMessage("user", prompt);
+  $("chatInput").value = "";
+  $("sendChat").disabled = true;
+  $("sendChat").textContent = "Thinking...";
+  try {
+    const response = await fetch("/v1/chat/completions", {
+      method:"POST",
+      credentials:"same-origin",
+      headers:{
+        "Content-Type":"application/json",
+        "Authorization":"Bearer " + key
+      },
+      body:JSON.stringify({messages:chatHistory})
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || "Chat request failed (" + response.status + ")");
+    const answer = result.choices?.[0]?.message?.content;
+    if (!answer) throw new Error("Declan AI returned an empty answer.");
+    chatHistory.push({role:"assistant", content:answer});
+    showChatMessage("assistant", answer);
+    showMessage("Declan AI replied successfully.");
+    await loadUsage();
+  } catch (e) {
+    chatHistory.pop();
+    showMessage(e.message);
+  } finally {
+    $("sendChat").disabled = false;
+    $("sendChat").textContent = "Send message";
+  }
+};
+
+$("chatInput").addEventListener("keydown", event => {
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    $("sendChat").click();
+  }
+});
+
+$("clearChat").onclick = () => {
+  chatHistory = [];
+  $("chatMessages").textContent = "Your conversation will appear here.";
+  $("chatInput").value = "";
+  showMessage("New chat started.");
+};
+
 async function loadUsage() {
   const result = await api("/api/usage");
   $("usageRequests").textContent = result.requests;
