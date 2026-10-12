@@ -285,6 +285,22 @@ def chat_completions():
         with urllib.request.urlopen(req, timeout=45) as response:
             result = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
+        provider_status = ""
+        provider_message = ""
+        try:
+            body = json.loads(exc.read().decode("utf-8"))
+            details = body.get("error", {}) if isinstance(body, dict) else {}
+            if isinstance(details, dict):
+                provider_status = str(details.get("status", ""))[:80]
+                provider_message = str(details.get("message", ""))[:500]
+        except (ValueError, UnicodeDecodeError):
+            pass
+
+        app.logger.warning(
+            "Gemini HTTP error: code=%s status=%s message=%s",
+            exc.code, provider_status, provider_message,
+        )
+
         if exc.code in (401, 403):
             return error("The AI provider rejected its configured credentials.", 502)
         if exc.code == 429:
