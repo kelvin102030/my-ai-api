@@ -402,7 +402,16 @@ def chat_completions():
         return error("No AI model provider is configured.", 503)
 
     contents = []
-    system_parts = []
+    system_parts = [
+        {
+            "text": (
+                "You are Declan AI, a helpful AI assistant powered by Google's Gemini model. "
+                "When asked your name or identity, introduce yourself as Declan AI. "
+                "Be honest that you use Gemini technology when asked about your underlying model. "
+                "Do not claim that you are a separate Google product."
+            )
+        }
+    ]
 
     for message in messages:
         if not isinstance(message, dict):
