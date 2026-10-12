@@ -1,5 +1,8 @@
 import hashlib
+import json
 import os
+import urllib.error
+import urllib.request
 import secrets
 import sqlite3
 from functools import wraps
@@ -216,17 +219,116 @@ def chat_completions():
     if not isinstance(data, dict) or not isinstance(data.get("messages"), list):
         return error("Send JSON containing a messages array.")
 
-    # The model connection will be added and tested separately.
+    messages = data["messages"]
+    if not messages:
+        return error("The messages array cannot be empty.")
+
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        return error("No AI model provider is configured.", 503)
+
+    contents = []
+    system_parts = []
+
+    for message in messages:
+        if not isinstance(message, dict):
+            return error("Each message must be an object.")
+
+        role = message.get("role")
+        content = message.get("content")
+
+        if role not in ("system", "user", "assistant") or not isinstance(content, str):
+            return error("Each message needs a supported role and string content.")
+
+        if role == "system":
+            system_parts.append({"text": content})
+        else:
+            contents.append({
+                "role": "model" if role == "assistant" else "user",
+                "parts": [{"text": content}],
+            })
+
+    if not contents:
+        return error("At least one user or assistant message is required.")
+
+    payload = {"contents": contents}
+    if system_parts:
+        payload["systemInstruction"] = {"parts": system_parts}
+
+    generation_config = {}
+    if isinstance(data.get("temperature"), (int, float)):
+        generation_config["temperature"] = max(
+            0, min(2, data["temperature"])
+        )
+    if isinstance(data.get("max_tokens"), int):
+        generation_config["maxOutputTokens"] = max(
+            1, min(8192, data["max_tokens"])
+        )
+    if generation_config:
+        payload["generationConfig"] = generation_config
+
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/"
+        "models/gemini-2.5-flash:generateContent"
+    )
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "x-goog-api-key": api_key,
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=45) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            return error("The AI provider rejected its configured credentials.", 502)
+        if exc.code == 429:
+            return error("The AI provider rate limit or quota was reached.", 429)
+        return error("The AI provider returned an error.", 502)
+    except (urllib.error.URLError, TimeoutError):
+        return error("The AI provider could not be reached. Please retry.", 502)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return error("The AI provider returned an invalid response.", 502)
+
+    candidates = result.get("candidates", [])
+    if not candidates:
+        return error("The AI provider returned no answer.", 502)
+
+    parts = candidates[0].get("content", {}).get("parts", [])
+    answer = "".join(
+        part.get("text", "") for part in parts if isinstance(part, dict)
+    )
+    if not answer:
+        return error("The AI provider returned no text answer.", 502)
+
     with connect_db() as db:
         db.execute("""
             INSERT INTO usage (user_id, key_id, endpoint)
             VALUES (?, ?, ?)
         """, (key["user_id"], key["id"], "/v1/chat/completions"))
 
-    return error(
-        "The API key is valid, but no AI model provider is configured yet.",
-        503,
-    )
+    usage = result.get("usageMetadata", {})
+    return jsonify({
+        "id": "declan-" + secrets.token_hex(12),
+        "object": "chat.completion",
+        "created": int(__import__("time").time()),
+        "model": data.get("model", "gemini-2.5-flash"),
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": answer},
+            "finish_reason": "stop",
+        }],
+        "usage": {
+            "prompt_tokens": usage.get("promptTokenCount", 0),
+            "completion_tokens": usage.get("candidatesTokenCount", 0),
+            "total_tokens": usage.get("totalTokenCount", 0),
+        },
+    })
 
 
 initialize_db()

@@ -62,7 +62,7 @@ class PlatformTests(unittest.TestCase):
             json={"messages": [{"role": "user", "content": "Hello"}]},
         )
         self.assertEqual(response.status_code, 503)
-        self.assertIn("no AI model provider", response.json["error"])
+        self.assertIn("No AI model provider", response.json["error"])
 
         response = self.client.post(
             f"/api/keys/{key_id}/revoke"
