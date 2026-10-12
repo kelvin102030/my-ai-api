@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>My AI API Platform</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#0b1020;color:#edf2ff;font:16px system-ui,sans-serif}
+header{padding:22px 18px;border-bottom:1px solid #29334d;background:#111a30}
+main{max-width:850px;margin:auto;padding:22px 16px}
+h1{font-size:24px;margin:0 0 6px}
+h2{font-size:19px;margin-top:0}
+p,.muted{color:#aebbd3}
+.card{background:#131d33;border:1px solid #293650;border-radius:14px;padding:18px;margin:16px 0}
+input,button{width:100%;padding:12px;border-radius:9px;margin:6px 0;font:inherit}
+input{background:#0b1020;color:white;border:1px solid #465572}
+button{border:0;background:#91b5ff;color:#081126;font-weight:700;cursor:pointer}
+button.secondary{background:#263652;color:#fff}
+button.danger{background:#62313a;color:#fff}
+.row{display:flex;gap:10px;flex-wrap:wrap}
+.row>*{flex:1;min-width:130px}
+.hidden{display:none}
+.notice{overflow-wrap:anywhere;padding:12px;border-radius:9px;background:#202c43;margin:10px 0}
+.key{border-top:1px solid #293650;padding:12px 0;overflow-wrap:anywhere}
+.status{color:#b7f5cb;white-space:pre-wrap}
+</style>
+</head>
+<body>
+<header>
+  <h1>My AI API Platform</h1>
+  <div class="muted">Developer dashboard · Local prototype</div>
+</header>
+<main>
+  <section id="auth" class="card">
+    <h2>Developer account</h2>
+    <p>Create an account or log in to manage your API keys.</p>
+    <input id="email" type="email" autocomplete="email" placeholder="Email address">
+    <input id="password" type="password" autocomplete="current-password" placeholder="Password (at least 10 characters)">
+    <div class="row">
+      <button id="register">Create account</button>
+      <button id="login" class="secondary">Log in</button>
+    </div>
+  </section>
+
+  <section id="workspace" class="hidden">
+    <div class="card">
+      <h2>Your API keys</h2>
+      <p>Keys are shown in full only once when created. Save a new key securely.</p>
+      <input id="keyName" maxlength="80" placeholder="Key name, e.g. Coding Board">
+      <button id="createKey">Generate API key</button>
+      <div id="newKey" class="notice hidden"></div>
+      <button id="refresh" class="secondary">Refresh key list</button>
+      <div id="keys"></div>
+    </div>
+    <div class="card">
+      <h2>API endpoint</h2>
+      <div class="notice">POST /v1/chat/completions</div>
+      <p>The API key management works, but AI responses are not available until a model provider is connected.</p>
+      <button id="logout" class="secondary">Log out</button>
+    </div>
+  </section>
+  <div id="message" class="notice" role="status">Ready.</div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+async function api(path, options={}) {
+  const response = await fetch(path, {
+    credentials: "same-origin",
+    headers: {"Content-Type":"application/json", ...(options.headers||{})},
+    ...options
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || "Request failed ("+response.status+")");
+  return data;
+}
+function showMessage(message) { $("message").textContent = message; }
+function signedIn(value) {
+  $("auth").classList.toggle("hidden", value);
+  $("workspace").classList.toggle("hidden", !value);
+}
+async function run(action) {
+  try { await action(); }
+  catch (e) { showMessage(e.message); }
+}
+$("register").onclick = () => run(async () => {
+  const result = await api("/api/register", {method:"POST", body:JSON.stringify({
+    email:$("email").value, password:$("password").value
+  })});
+  showMessage(result.message);
+});
+$("login").onclick = () => run(async () => {
+  const result = await api("/api/login", {method:"POST", body:JSON.stringify({
+    email:$("email").value, password:$("password").value
+  })});
+  signedIn(true);
+  showMessage(result.message);
+  await loadKeys();
+});
+async function loadKeys() {
+  const result = await api("/api/keys");
+  $("keys").replaceChildren();
+  if (!result.keys.length) {
+    $("keys").textContent = "No keys yet. Generate your first key above.";
+    return;
+  }
+  for (const key of result.keys) {
+    const item = document.createElement("div");
+    item.className = "key";
+    const label = document.createElement("p");
+    label.textContent = key.name + " · " + key.prefix + "… · " +
+      (key.revoked ? "Revoked" : "Active") + " · Created " + key.created_at;
+    item.appendChild(label);
+    if (!key.revoked) {
+      const revoke = document.createElement("button");
+      revoke.className = "danger";
+      revoke.textContent = "Revoke key";
+      revoke.onclick = () => run(async () => {
+        await api("/api/keys/"+key.id+"/revoke", {method:"POST", body:"{}"});
+        showMessage("Key revoked.");
+        await loadKeys();
+      });
+      item.appendChild(revoke);
+    }
+    $("keys").appendChild(item);
+  }
+}
+$("createKey").onclick = () => run(async () => {
+  const result = await api("/api/keys", {method:"POST", body:JSON.stringify({
+    name:$("keyName").value || "My API key"
+  })});
+  $("newKey").classList.remove("hidden");
+  $("newKey").textContent = "Copy and store this key now. It will not be shown again: " + result.api_key;
+  showMessage("API key created.");
+  await loadKeys();
+});
+$("refresh").onclick = () => run(loadKeys);
+$("logout").onclick = () => run(async () => {
+  const result = await api("/api/logout", {method:"POST", body:"{}"});
+  signedIn(false);
+  showMessage(result.message);
+});
+</script>
+</body>
+</html>
