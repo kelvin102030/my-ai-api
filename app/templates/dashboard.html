@@ -24,6 +24,64 @@ button.danger{background:#62313a;color:#fff}
 .notice{overflow-wrap:anywhere;padding:12px;border-radius:9px;background:#202c43;margin:10px 0}
 .key{border-top:1px solid #293650;padding:12px 0;overflow-wrap:anywhere}
 .status{color:#b7f5cb;white-space:pre-wrap} #chatMessages{min-height:100px;max-height:380px;overflow:auto;background:#0b1020;border:1px solid #293650;border-radius:10px;padding:12px} .bubble{white-space:pre-wrap;overflow-wrap:anywhere;padding:10px;margin:8px 0;border-radius:9px;background:#202c43} .bubble.user{background:#263b5c} textarea{resize:vertical}
+
+/* Mobile usability improvements */
+html {
+  -webkit-text-size-adjust: 100%;
+  scroll-behavior: smooth;
+}
+.card, main, header {
+  min-width: 0;
+}
+input, button, textarea {
+  min-height: 48px;
+}
+button {
+  touch-action: manipulation;
+}
+#chatMessages {
+  overflow-wrap: anywhere;
+  scroll-behavior: smooth;
+}
+#newKey, .notice, .key {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+@media (max-width: 480px) {
+  header {
+    padding: 18px 14px;
+  }
+  main {
+    padding: 12px 10px;
+  }
+  .card {
+    padding: 14px;
+    margin: 12px 0;
+    border-radius: 12px;
+  }
+  h1 {
+    font-size: 22px;
+  }
+  h2 {
+    font-size: 18px;
+  }
+  .row {
+    gap: 6px;
+  }
+  .row > * {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+  #chatMessages {
+    max-height: 50vh;
+    min-height: 90px;
+    padding: 9px;
+  }
+  input, button, textarea {
+    max-width: 100%;
+  }
+}
+
 </style>
 </head>
 <body>
@@ -159,7 +217,9 @@ $("sendChat").onclick = async () => {
     chatHistory.push({role:"assistant", content:answer});
     showChatMessage("assistant", answer);
     showMessage("Declan AI replied successfully.");
-    await loadUsage();
+    loadUsage().catch(() => {
+      showMessage("Declan AI replied, but usage statistics could not refresh.");
+    });
   } catch (e) {
     chatHistory.pop();
     showMessage(e.message);
