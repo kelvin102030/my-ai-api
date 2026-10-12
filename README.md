@@ -1,3 +1,3 @@
-# My AI API Platform
+# Declan AI
 
 A separate developer API service.

@@ -101,7 +101,7 @@ def dashboard():
 
 @app.get("/health")
 def health():
-    return jsonify({"status": "ok", "service": "My AI API Platform"})
+    return jsonify({"status": "ok", "service": "Declan AI"})
 
 
 @app.post("/api/register")
