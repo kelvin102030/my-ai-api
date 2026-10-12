@@ -29,10 +29,20 @@ DATA_DIR.mkdir(exist_ok=True)
 DB_PATH = DATA_DIR / "platform.db"
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("APP_SECRET_KEY") or secrets.token_hex(32)
+
+production = os.environ.get("FLASK_ENV", "").lower() == "production"
+secret_key = os.environ.get("APP_SECRET_KEY")
+
+if production and (not secret_key or len(secret_key) < 32):
+    raise RuntimeError(
+        "Production requires APP_SECRET_KEY with at least 32 characters."
+    )
+
+app.secret_key = secret_key or secrets.token_hex(32)
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=production,
 )
 
 
@@ -154,6 +164,9 @@ def initialize_db():
                 user_id INTEGER NOT NULL REFERENCES users(id),
                 key_id INTEGER NOT NULL REFERENCES api_keys(id),
                 endpoint TEXT NOT NULL,
+                prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                completion_tokens INTEGER NOT NULL DEFAULT 0,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """
@@ -182,12 +195,33 @@ def initialize_db():
                 user_id INTEGER NOT NULL,
                 key_id INTEGER NOT NULL,
                 endpoint TEXT NOT NULL,
+                prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                completion_tokens INTEGER NOT NULL DEFAULT 0,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
         """
 
     with connect_db() as db:
         db.executescript(schema)
+        columns = ("prompt_tokens", "completion_tokens", "total_tokens")
+        if os.environ.get("DATABASE_URL"):
+            for column in columns:
+                db.execute(
+                    f"ALTER TABLE usage ADD COLUMN IF NOT EXISTS {column} "
+                    "INTEGER NOT NULL DEFAULT 0"
+                )
+        else:
+            existing = {
+                row["name"]
+                for row in db.execute("PRAGMA table_info(usage)").fetchall()
+            }
+            for column in columns:
+                if column not in existing:
+                    db.execute(
+                        f"ALTER TABLE usage ADD COLUMN {column} "
+                        "INTEGER NOT NULL DEFAULT 0"
+                    )
 
 def error(message, status=400):
     return jsonify({"error": message}), status
@@ -328,6 +362,27 @@ def revoke_key(key_id):
     return jsonify({"message": "API key revoked."})
 
 
+@app.get("/api/usage")
+@login_required
+def get_usage():
+    with connect_db() as db:
+        row = db.execute("""
+            SELECT COUNT(*) AS requests,
+                   COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+                   COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
+                   COALESCE(SUM(total_tokens), 0) AS total_tokens
+            FROM usage
+            WHERE user_id = ?
+        """, (session["user_id"],)).fetchone()
+
+    return jsonify({
+        "requests": row["requests"],
+        "prompt_tokens": row["prompt_tokens"],
+        "completion_tokens": row["completion_tokens"],
+        "total_tokens": row["total_tokens"],
+    })
+
+
 @app.post("/v1/chat/completions")
 def chat_completions():
     key = authenticate_api_key()
@@ -441,13 +496,30 @@ def chat_completions():
     if not answer:
         return error("The AI provider returned no text answer.", 502)
 
+    usage = result.get("usageMetadata", {})
+    if not isinstance(usage, dict):
+        usage = {}
+
+    prompt_tokens = usage.get("promptTokenCount", 0) or 0
+    completion_tokens = usage.get("candidatesTokenCount", 0) or 0
+    total_tokens = usage.get("totalTokenCount", 0) or 0
+
     with connect_db() as db:
         db.execute("""
-            INSERT INTO usage (user_id, key_id, endpoint)
-            VALUES (?, ?, ?)
-        """, (key["user_id"], key["id"], "/v1/chat/completions"))
+            INSERT INTO usage (
+                user_id, key_id, endpoint,
+                prompt_tokens, completion_tokens, total_tokens
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            key["user_id"],
+            key["id"],
+            "/v1/chat/completions",
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+        ))
 
-    usage = result.get("usageMetadata", {})
     return jsonify({
         "id": "declan-" + secrets.token_hex(12),
         "object": "chat.completion",

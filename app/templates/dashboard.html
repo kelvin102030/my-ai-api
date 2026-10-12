@@ -96,7 +96,17 @@ $("login").onclick = () => run(async () => {
   signedIn(true);
   showMessage(result.message);
   await loadKeys();
+  await loadUsage();
 });
+async function loadUsage() {
+  const result = await api("/api/usage");
+  $("usageRequests").textContent = result.requests;
+  $("usagePrompt").textContent = result.prompt_tokens;
+  $("usageCompletion").textContent = result.completion_tokens;
+  $("usageTotal").textContent = result.total_tokens;
+}
+$("refreshUsage").onclick = () => run(loadUsage);
+
 async function loadKeys() {
   const result = await api("/api/keys");
   $("keys").replaceChildren();

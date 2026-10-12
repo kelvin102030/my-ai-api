@@ -76,6 +76,30 @@ class PlatformTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 401)
 
+    def test_usage_requires_login(self):
+        response = self.client.get("/api/usage")
+        self.assertEqual(response.status_code, 401)
+
+    def test_usage_returns_account_totals(self):
+        self.register_and_login()
+
+        with api.connect_db() as db:
+            db.execute("""
+                INSERT INTO usage (
+                    user_id, key_id, endpoint,
+                    prompt_tokens, completion_tokens, total_tokens
+                )
+                SELECT id, 1, '/v1/chat/completions', 10, 5, 15
+                FROM users WHERE email = ?
+            """, (self.email,))
+
+        response = self.client.get("/api/usage")
+        self.assertEqual(response.status_code, 200, response.json)
+        self.assertEqual(response.json["requests"], 1)
+        self.assertEqual(response.json["prompt_tokens"], 10)
+        self.assertEqual(response.json["completion_tokens"], 5)
+        self.assertEqual(response.json["total_tokens"], 15)
+
     def test_keys_require_login(self):
         response = self.client.post("/api/keys", json={"name": "Test"})
         self.assertEqual(response.status_code, 401)
