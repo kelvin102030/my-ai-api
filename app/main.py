@@ -5,6 +5,17 @@ import urllib.error
 import urllib.request
 import secrets
 import sqlite3
+
+try:
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+except ImportError:
+    psycopg2 = None
+    RealDictCursor = None
+
+INTEGRITY_ERRORS = (sqlite3.IntegrityError,) + (
+    (psycopg2.IntegrityError,) if psycopg2 else ()
+)
 from functools import wraps
 from contextlib import contextmanager
 from pathlib import Path
@@ -25,10 +36,89 @@ app.config.update(
 )
 
 
+class PostgreSQLResult:
+    def __init__(self, cursor, inserted_row=None):
+        self.cursor = cursor
+        self.inserted_row = inserted_row
+
+    @property
+    def lastrowid(self):
+        return self.inserted_row["id"] if self.inserted_row else None
+
+    @property
+    def rowcount(self):
+        return self.cursor.rowcount
+
+    def fetchone(self):
+        if self.inserted_row is not None:
+            row = self.inserted_row
+            self.inserted_row = None
+            return row
+        return self.cursor.fetchone()
+
+    def fetchall(self):
+        rows = self.cursor.fetchall()
+        return [
+            {
+                key: value.isoformat() if hasattr(value, "isoformat") else value
+                for key, value in row.items()
+            }
+            for row in rows
+        ]
+
+
+class PostgreSQLAdapter:
+    def __init__(self, connection):
+        self.connection = connection
+
+    def execute(self, sql, params=()):
+        is_key_insert = sql.lstrip().upper().startswith(
+            "INSERT INTO API_KEYS"
+        )
+        if is_key_insert and "RETURNING" not in sql.upper():
+            sql = sql.rstrip().rstrip(";") + " RETURNING id"
+
+        cursor = self.connection.cursor()
+        cursor.execute(sql.replace("?", "%s"), params)
+        inserted_row = cursor.fetchone() if is_key_insert else None
+        return PostgreSQLResult(cursor, inserted_row)
+
+    def executescript(self, sql):
+        for statement in sql.split(";"):
+            if statement.strip():
+                self.execute(statement)
+
+    def commit(self):
+        self.connection.commit()
+
+    def rollback(self):
+        self.connection.rollback()
+
+    def close(self):
+        self.connection.close()
+
+
 @contextmanager
 def connect_db():
-    db = sqlite3.connect(DB_PATH)
-    db.row_factory = sqlite3.Row
+    database_url = os.environ.get("DATABASE_URL")
+
+    if database_url:
+        if psycopg2 is None:
+            raise RuntimeError(
+                "PostgreSQL is configured but psycopg2 is not installed."
+            )
+
+        connection = psycopg2.connect(
+            database_url,
+            cursor_factory=RealDictCursor,
+            connect_timeout=10,
+        )
+        db = PostgreSQLAdapter(connection)
+    else:
+        connection = sqlite3.connect(DB_PATH)
+        connection.row_factory = sqlite3.Row
+        db = connection
+
     try:
         yield db
         db.commit()
@@ -40,8 +130,35 @@ def connect_db():
 
 
 def initialize_db():
-    with connect_db() as db:
-        db.executescript("""
+    if os.environ.get("DATABASE_URL"):
+        schema = """
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                email TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS api_keys (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id),
+                name TEXT NOT NULL,
+                key_hash TEXT UNIQUE NOT NULL,
+                prefix TEXT NOT NULL,
+                revoked INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS usage (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id),
+                key_id INTEGER NOT NULL REFERENCES api_keys(id),
+                endpoint TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """
+    else:
+        schema = """
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 email TEXT UNIQUE NOT NULL,
@@ -67,8 +184,10 @@ def initialize_db():
                 endpoint TEXT NOT NULL,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
-        """)
+        """
 
+    with connect_db() as db:
+        db.executescript(schema)
 
 def error(message, status=400):
     return jsonify({"error": message}), status
@@ -124,7 +243,7 @@ def register():
                 "INSERT INTO users (email, password_hash) VALUES (?, ?)",
                 (email, generate_password_hash(password)),
             )
-    except sqlite3.IntegrityError:
+    except INTEGRITY_ERRORS:
         return error("An account with that email already exists.", 409)
 
     return jsonify({
