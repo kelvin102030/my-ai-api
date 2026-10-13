@@ -5,6 +5,7 @@ import urllib.error
 import urllib.request
 import secrets
 import sqlite3
+import time
 
 try:
     import psycopg2
@@ -204,6 +205,14 @@ def initialize_db():
 
     with connect_db() as db:
         db.executescript(schema)
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS rate_limits (
+                key_id INTEGER NOT NULL REFERENCES api_keys(id),
+                window_start INTEGER NOT NULL,
+                request_count INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (key_id, window_start)
+            )
+        """)
         columns = ("prompt_tokens", "completion_tokens", "total_tokens")
         if os.environ.get("DATABASE_URL"):
             for column in columns:
@@ -222,6 +231,23 @@ def initialize_db():
                         f"ALTER TABLE usage ADD COLUMN {column} "
                         "INTEGER NOT NULL DEFAULT 0"
                     )
+
+def consume_rate_limit(key_id):
+    # Fixed one-minute windows, shared across app workers and instances.
+    window_start = int(time.time()) // 60
+    with connect_db() as db:
+        row = db.execute(
+            """
+            INSERT INTO rate_limits (key_id, window_start, request_count)
+            VALUES (?, ?, 1)
+            ON CONFLICT (key_id, window_start)
+            DO UPDATE SET request_count = rate_limits.request_count + 1
+            RETURNING request_count
+            """,
+            (key_id, window_start),
+        ).fetchone()
+    return row["request_count"] <= 30
+
 
 def error(message, status=400):
     return jsonify({"error": message}), status
@@ -396,6 +422,12 @@ def chat_completions():
     messages = data["messages"]
     if not messages:
         return error("The messages array cannot be empty.")
+
+    if not consume_rate_limit(key["id"]):
+        return error(
+            "Rate limit exceeded. Maximum 30 requests per API key per minute.",
+            429,
+        )
 
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
