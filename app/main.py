@@ -520,6 +520,11 @@ def chat_completions():
             return error("The AI provider rejected its configured credentials.", 502)
         if exc.code == 429:
             return error("The AI provider rate limit or quota was reached.", 429)
+        if exc.code == 503:
+            return error(
+                "The AI provider is temporarily overloaded. Please try again shortly.",
+                503,
+            )
         return error("The AI provider returned an error.", 502)
     except (urllib.error.URLError, TimeoutError):
         return error("The AI provider could not be reached. Please retry.", 502)

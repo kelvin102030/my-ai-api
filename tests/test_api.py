@@ -1,5 +1,7 @@
+import io
 import tempfile
 import unittest
+from urllib.error import HTTPError
 from unittest.mock import patch
 from pathlib import Path
 
@@ -76,6 +78,35 @@ class PlatformTests(unittest.TestCase):
             json={"messages": [{"role": "user", "content": "Hello"}]},
         )
         self.assertEqual(response.status_code, 401)
+
+    def test_gemini_overload_returns_retryable_503(self):
+        self.register_and_login()
+        key_response = self.client.post(
+            "/api/keys", json={"name": "Overload test"}
+        )
+        self.assertEqual(key_response.status_code, 201, key_response.json)
+        token = key_response.json["api_key"]
+
+        upstream_error = HTTPError(
+            "https://generativelanguage.googleapis.com/",
+            503,
+            "Service Unavailable",
+            {},
+            io.BytesIO(
+                b'{"error":{"status":"UNAVAILABLE","message":"high demand"}}'
+            ),
+        )
+
+        with patch.dict(api.os.environ, {"GEMINI_API_KEY": "test-gemini-key"}), \
+             patch("app.main.urllib.request.urlopen", side_effect=upstream_error):
+            response = self.client.post(
+                "/v1/chat/completions",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"messages": [{"role": "user", "content": "Hello"}]},
+            )
+
+        self.assertEqual(response.status_code, 503, response.json)
+        self.assertIn("temporarily overloaded", response.json["error"])
 
     def test_usage_requires_login(self):
         response = self.client.get("/api/usage")
