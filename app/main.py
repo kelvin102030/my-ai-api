@@ -496,9 +496,30 @@ def chat_completions():
         method="POST",
     )
 
+    # Retry once for temporary upstream failures. Two 35-second attempts
+    # plus a short delay stay within the Gunicorn 90-second timeout.
     try:
-        with urllib.request.urlopen(req, timeout=45) as response:
-            result = json.loads(response.read().decode("utf-8"))
+        for attempt in range(2):
+            try:
+                with urllib.request.urlopen(req, timeout=35) as response:
+                    result = json.loads(response.read().decode("utf-8"))
+                break
+            except urllib.error.HTTPError as exc:
+                if exc.code == 503 and attempt == 0:
+                    app.logger.warning(
+                        "Gemini returned HTTP 503; retrying once."
+                    )
+                    time.sleep(1)
+                    continue
+                raise
+            except (urllib.error.URLError, TimeoutError):
+                if attempt == 0:
+                    app.logger.warning(
+                        "Gemini connection failed; retrying once."
+                    )
+                    time.sleep(1)
+                    continue
+                raise
     except urllib.error.HTTPError as exc:
         provider_status = ""
         provider_message = ""

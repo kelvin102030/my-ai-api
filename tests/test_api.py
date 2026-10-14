@@ -108,6 +108,64 @@ class PlatformTests(unittest.TestCase):
         self.assertEqual(response.status_code, 503, response.json)
         self.assertIn("temporarily overloaded", response.json["error"])
 
+    def test_gemini_recovers_after_one_temporary_503(self):
+        self.register_and_login()
+        key_response = self.client.post(
+            "/api/keys", json={"name": "Recovery test"}
+        )
+        self.assertEqual(key_response.status_code, 201, key_response.json)
+        token = key_response.json["api_key"]
+
+        upstream_error = HTTPError(
+            "https://generativelanguage.googleapis.com/",
+            503,
+            "Service Unavailable",
+            {},
+            io.BytesIO(
+                b'{"error":{"status":"UNAVAILABLE","message":"high demand"}}'
+            ),
+        )
+
+        successful_response = {
+            "candidates": [{
+                "content": {
+                    "parts": [{"text": "Recovered successfully"}]
+                }
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 5,
+                "candidatesTokenCount": 3,
+                "totalTokenCount": 8,
+            },
+        }
+
+        from unittest.mock import MagicMock
+
+        mock_response = MagicMock()
+        mock_response.__enter__.return_value = mock_response
+        mock_response.read.return_value = __import__("json").dumps(
+            successful_response
+        ).encode("utf-8")
+
+        with patch.dict(
+            api.os.environ, {"GEMINI_API_KEY": "test-gemini-key"}
+        ), patch(
+            "app.main.urllib.request.urlopen",
+            side_effect=[upstream_error, mock_response],
+        ) as mocked_urlopen, patch("app.main.time.sleep"):
+            response = self.client.post(
+                "/v1/chat/completions",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"messages": [{"role": "user", "content": "Hello"}]},
+            )
+
+        self.assertEqual(response.status_code, 200, response.json)
+        self.assertEqual(
+            response.json["choices"][0]["message"]["content"],
+            "Recovered successfully",
+        )
+        self.assertEqual(mocked_urlopen.call_count, 2)
+
     def test_usage_requires_login(self):
         response = self.client.get("/api/usage")
         self.assertEqual(response.status_code, 401)
