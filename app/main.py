@@ -479,6 +479,14 @@ def chat_completions():
         generation_config["maxOutputTokens"] = max(
             1, min(8192, data["max_tokens"])
         )
+
+    response_format = data.get("response_format")
+    if (
+        isinstance(response_format, dict)
+        and response_format.get("type") == "json_object"
+    ):
+        generation_config["responseMimeType"] = "application/json"
+
     if generation_config:
         payload["generationConfig"] = generation_config
 

@@ -166,6 +166,64 @@ class PlatformTests(unittest.TestCase):
         )
         self.assertEqual(mocked_urlopen.call_count, 2)
 
+    def test_json_response_format_enables_gemini_json_mode(self):
+        self.register_and_login()
+        key_response = self.client.post(
+            "/api/keys", json={"name": "JSON mode test"}
+        )
+        self.assertEqual(key_response.status_code, 201, key_response.json)
+        token = key_response.json["api_key"]
+
+        successful_response = {
+            "candidates": [{
+                "content": {
+                    "parts": [{
+                        "text": '{"changes":[],"message":"JSON mode works"}'
+                    }]
+                }
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 5,
+                "candidatesTokenCount": 5,
+                "totalTokenCount": 10,
+            },
+        }
+
+        from unittest.mock import MagicMock
+        import json
+
+        mock_response = MagicMock()
+        mock_response.__enter__.return_value = mock_response
+        mock_response.read.return_value = json.dumps(
+            successful_response
+        ).encode("utf-8")
+
+        with patch.dict(
+            api.os.environ, {"GEMINI_API_KEY": "test-gemini-key"}
+        ), patch(
+            "app.main.urllib.request.urlopen",
+            return_value=mock_response,
+        ) as mocked_urlopen:
+            response = self.client.post(
+                "/v1/chat/completions",
+                headers={"Authorization": f"Bearer {token}"},
+                json={
+                    "messages": [
+                        {"role": "user", "content": "Return a JSON object"}
+                    ],
+                    "response_format": {"type": "json_object"},
+                },
+            )
+
+        self.assertEqual(response.status_code, 200, response.json)
+
+        request = mocked_urlopen.call_args.args[0]
+        payload = json.loads(request.data.decode("utf-8"))
+        self.assertEqual(
+            payload["generationConfig"]["responseMimeType"],
+            "application/json",
+        )
+
     def test_usage_requires_login(self):
         response = self.client.get("/api/usage")
         self.assertEqual(response.status_code, 401)
