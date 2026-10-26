@@ -564,7 +564,20 @@ def chat_completions():
     if not candidates:
         return error("The AI provider returned no answer.", 502)
 
-    parts = candidates[0].get("content", {}).get("parts", [])
+    candidate = candidates[0]
+    finish_reason = candidate.get("finishReason", "STOP")
+
+    if finish_reason == "MAX_TOKENS":
+        app.logger.warning(
+            "Gemini response reached its output token limit."
+        )
+        return error(
+            "The AI response was cut off because it reached the output "
+            "limit. Please retry with a smaller task.",
+            502,
+        )
+
+    parts = candidate.get("content", {}).get("parts", [])
     answer = "".join(
         part.get("text", "") for part in parts if isinstance(part, dict)
     )

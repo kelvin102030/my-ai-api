@@ -224,6 +224,58 @@ class PlatformTests(unittest.TestCase):
             "application/json",
         )
 
+    def test_max_tokens_response_returns_clear_error(self):
+        self.register_and_login()
+        key_response = self.client.post(
+            "/api/keys", json={"name": "Output limit test"}
+        )
+        self.assertEqual(key_response.status_code, 201, key_response.json)
+        token = key_response.json["api_key"]
+
+        truncated_response = {
+            "candidates": [{
+                "finishReason": "MAX_TOKENS",
+                "content": {
+                    "parts": [{"text": '{"changes":[{"path":"index.html",'}]
+                },
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 20,
+                "candidatesTokenCount": 100,
+                "totalTokenCount": 120,
+            },
+        }
+
+        from unittest.mock import MagicMock
+        import json
+
+        mock_response = MagicMock()
+        mock_response.__enter__.return_value = mock_response
+        mock_response.read.return_value = json.dumps(
+            truncated_response
+        ).encode("utf-8")
+
+        with patch.dict(
+            api.os.environ, {"GEMINI_API_KEY": "test-gemini-key"}
+        ), patch(
+            "app.main.urllib.request.urlopen",
+            return_value=mock_response,
+        ):
+            response = self.client.post(
+                "/v1/chat/completions",
+                headers={"Authorization": f"Bearer {token}"},
+                json={
+                    "messages": [
+                        {"role": "user", "content": "Generate several files"}
+                    ],
+                    "response_format": {"type": "json_object"},
+                },
+            )
+
+        self.assertEqual(response.status_code, 502, response.json)
+        self.assertIn("output limit", response.json["error"].lower())
+        self.assertIn("retry", response.json["error"].lower())
+
     def test_usage_requires_login(self):
         response = self.client.get("/api/usage")
         self.assertEqual(response.status_code, 401)
